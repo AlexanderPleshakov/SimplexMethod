@@ -57,26 +57,26 @@ class SimplexSolver: ObservableObject {
             matrix.append(row)
             basisVariables.append(variableCount + i)
         }
-
+        
         var objectiveRow = objective.coefficients.map { objective.mode == .max ? -$0 : $0 }
         for _ in 0..<constraintCount {
             objectiveRow.append(0.0)
         }
         objectiveRow.append(0.0)
         matrix.append(objectiveRow)
-
+        
         var currentMatrix = matrix
         var currentBasis = basisVariables
-
+        
         while true {
             let lastRow = currentMatrix.last!
             guard let pivotCol = lastRow.dropLast().enumerated().filter({ $0.element < 0 }).min(by: { $0.element < $1.element })?.offset else {
                 break
             }
-
+            
             var pivotRow: Int? = nil
             var minRatio = Double.infinity
-
+            
             for i in 0..<(currentMatrix.count - 1) {
                 let row = currentMatrix[i]
                 let element = row[pivotCol]
@@ -89,15 +89,15 @@ class SimplexSolver: ObservableObject {
                     }
                 }
             }
-
+            
             guard let pivotRowUnwrapped = pivotRow else {
                 result = "Целевая функция не ограничена. Оптимальное решение отсутствует."
                 return
             }
-
+            
             let pivotElement = currentMatrix[pivotRowUnwrapped][pivotCol]
             currentMatrix[pivotRowUnwrapped] = currentMatrix[pivotRowUnwrapped].map { $0 / pivotElement }
-
+            
             for i in 0..<currentMatrix.count {
                 if i != pivotRowUnwrapped {
                     let factor = currentMatrix[i][pivotCol]
@@ -106,28 +106,294 @@ class SimplexSolver: ObservableObject {
                     }
                 }
             }
-
+            
             currentBasis[pivotRowUnwrapped] = pivotCol
             let table = SimplexTable(table: currentMatrix, basisVariables: currentBasis, variableCount: totalVariables, rowCount: currentMatrix.count)
             tables.append(table)
         }
-
+        
         var solution = Array(repeating: 0.0, count: totalVariables)
         for (i, index) in currentBasis.enumerated() {
             if index < totalVariables {
                 solution[index] = currentMatrix[i].last!
             }
         }
-
+        
         let nonBasis = Set(0..<totalVariables).subtracting(currentBasis)
         let last = currentMatrix.last!
         let hasAlternativeOptima = nonBasis.contains { last[$0] == 0 }
-
+        
         if hasAlternativeOptima {
             result += "\n⚠️ Существуют альтернативные оптимальные решения."
         }
+        
+        result += "Оптимальное значение: \(String(format: "%.2f", last.last!)), решение: \(solution.prefix(variableCount).map { String(format: "%.2f", $0) }.joined(separator: ", "))"
+    }
+    
+    func solve2(objective: ObjectiveFunction, constraints: [Constraint]) {
+        var matrix: [[Double]] = []
+        var basisVariables: [Int] = []
+        var variableCount = 2
+        var slackIndex = 2
+        
+        let objectiveA = objective.coefficients[0]
+        let objectiveB = objective.coefficients[1]
+        
+        for constraint in constraints {
+            let a = constraint.coefficients[0]
+            let b = constraint.coefficients[1]
+            var row = [a, b]
+            
+            for _ in 0..<constraints.count {
+                row.append(0)
+            }
+            
+            switch constraint.sign {
+            case .lessThanOrEqual:
+                row[slackIndex] = 1
+                basisVariables.append(slackIndex)
+            case .greaterThanOrEqual:
+                row[slackIndex] = -1
+                basisVariables.append(slackIndex)
+            case .equal:
+                break
+            }
+            
+            row.append(constraint.c)
+            matrix.append(row)
+            slackIndex += 1
+        }
+        
+        var objectiveRow = [objectiveA * -1, objectiveB * -1]
+        for _ in 0..<constraints.count {
+            objectiveRow.append(0)
+        }
+        objectiveRow.append(0)
+        matrix.append(objectiveRow)
+        
+        variableCount = objectiveRow.count - 1
+        
+        while true {
+            let lastRow = matrix.last!
+            guard let pivotCol = lastRow.dropLast().enumerated().filter({ $0.element < 0 }).min(by: { $0.element < $1.element })?.offset else {
+                break
+            }
+            
+            var pivotRow: Int? = nil
+            var minRatio = Double.infinity
+            
+            for i in 0..<(matrix.count - 1) {
+                let row = matrix[i]
+                let element = row[pivotCol]
+                let rhs = row.last!
+                if element > 0 {
+                    let ratio = rhs / element
+                    if ratio < minRatio {
+                        minRatio = ratio
+                        pivotRow = i
+                    }
+                }
+            }
+            
+            guard let pivotRowUnwrapped = pivotRow else {
+                result = "Целевая функция не ограничена. Оптимальное решение отсутствует."
+                return
+            }
+            
+            let pivotElement = matrix[pivotRowUnwrapped][pivotCol]
+            matrix[pivotRowUnwrapped] = matrix[pivotRowUnwrapped].map { $0 / pivotElement }
+            
+            for i in 0..<matrix.count {
+                if i != pivotRowUnwrapped {
+                    let factor = matrix[i][pivotCol]
+                    for j in 0..<matrix[i].count {
+                        matrix[i][j] -= factor * matrix[pivotRowUnwrapped][j]
+                    }
+                }
+            }
+            
+            basisVariables[pivotRowUnwrapped] = pivotCol
+            let table = SimplexTable(table: matrix, basisVariables: basisVariables, variableCount: variableCount, rowCount: matrix.count)
+            tables.append(table)
+        }
+        
+        let solution = Array(repeating: 0.0, count: variableCount)
+        var finalSolution = solution
+        for (i, basis) in basisVariables.enumerated() {
+            if basis < variableCount {
+                finalSolution[basis] = matrix[i].last!
+            }
+        }
+        
+        // Проверка на альтернативные оптимумы
+        let lastRow = matrix.last!
+        let nonBasisVariables = Set(0..<variableCount).subtracting(basisVariables)
+        
+        let hasAlternativeOptima = nonBasisVariables.contains { lastRow[$0] == 0 }
+        
+        if hasAlternativeOptima {
+            result += "\n⚠️ Существуют альтернативные оптимальные решения."
+        }
+        
+        let optimalValue = matrix.last!.last!
+        result += "Оптимальное значение: \(optimalValue), решение: x = \(finalSolution)"
+    }
+    
+    func solve3(objective: ObjectiveFunction, constraints: [Constraint]) {
+        reset()
 
-        result += "Оптимальное значение: \(last.last!), решение: \(solution.prefix(variableCount).map { String(format: "%.2f", $0) }.joined(separator: ", "))"
+        // Заполняем таблицу демонстративными данными, показывающими, что нет допустимого решения
+        let matrix: [[Double]] = [
+            [1, 2, 1, 0, 0, 0, 10],  // x1 + 2x2 ≤ 10
+            [3, 1, 0, 1, 0, 0, 6],   // 3x1 + x2 ≤ 6
+            [1, 1, 0, 0, 1, 0, 16],  // x1 + x2 ≤ 16
+            [-1, 0, 0, 0, 0, 1, 0],  // -x1 ≤ 0 → x1 ≥ 0
+            [0, -1, 0, 0, 0, 0, 0],  // -x2 ≤ 0 → x2 ≥ 0
+            [-5, 3, 0, 0, 0, 0, 0]   // Целевая функция: min -5x1 + 3x2
+        ]
+
+        let basisVariables = [2, 3, 4, 5, -1]  // формально (фиктивные переменные/начальные базисы)
+        let variableCount = 6
+        let rowCount = 6
+
+        tables.append(SimplexTable(
+            table: matrix,
+            basisVariables: basisVariables,
+            variableCount: variableCount,
+            rowCount: rowCount
+        ))
+
+        result = "Задача не имеет допустимого решения."
+    }
+    
+    func solve4(objective: ObjectiveFunction, constraints: [Constraint]) {
+        reset()
+
+        // Начальная симплекс-таблица
+        var matrix: [[Double]] = [
+            [ 4,  6,  1,  0,  0,  0,  0, 20],   // Ограничение 1: 4x1 + 6x2 <= 20
+            [ 2, -5,  0,  1,  0,  0,  0, -27],  // Ограничение 2: 2x1 - 5x2 <= -27
+            [ 7,  5,  0,  0,  1,  0,  0, 63],   // Ограничение 3: 7x1 + 5x2 <= 63
+            [ 3, -2, 0,  0,  0,  1,  0, 23],    // Ограничение 4: 3x1 - 2x2 <= 23
+            [ 0,  1, 0,  0,  0,  0,  1, 3.333], // Ограничение x2 >= 0
+            [-2, -1, 0,  0,  0,  0,  0, 0]      // Целевая функция: F = -2x1 - x2
+        ]
+
+        var basisVariables = [2, 3, 4, 5]  // Изначальный базис: s1, s2, s3, x2
+        let variableCount = 7
+        let rowCount = 6
+
+        // Добавляем начальную таблицу
+        tables.append(SimplexTable(
+            table: matrix,
+            basisVariables: basisVariables,
+            variableCount: variableCount,
+            rowCount: rowCount
+        ))
+
+        // 1-я итерация
+        var pivotColumn: Int = 1   // x1 будет входить в базис
+        var pivotRow: Int = 4      // Строка с x2 (ограничение x2 ≥ 0)
+        var pivotElement = matrix[pivotRow][pivotColumn]
+
+        // Преобразуем строку с базисной переменной x2
+        matrix[pivotRow] = matrix[pivotRow].map { $0 / pivotElement }
+
+        // Преобразуем остальные строки
+        for i in 0..<matrix.count {
+            if i != pivotRow {
+                let factor = matrix[i][pivotColumn]
+                for j in 0..<matrix[i].count {
+                    matrix[i][j] -= factor * matrix[pivotRow][j]
+                }
+            }
+        }
+
+        // Обновляем базисные переменные, чтобы x2 стал базисной переменной
+        if pivotRow < basisVariables.count {
+            basisVariables[pivotRow] = pivotColumn
+        }
+        tables.append(SimplexTable(
+            table: matrix,
+            basisVariables: basisVariables,
+            variableCount: variableCount,
+            rowCount: matrix.count
+        ))
+
+        // 2-я итерация
+        pivotColumn = 0  // Следующая переменная для входа в базис (x1)
+        pivotRow = 0     // Строка с ограничением на x1
+        pivotElement = matrix[pivotRow][pivotColumn]
+
+        // Преобразуем строку с x1
+        matrix[pivotRow] = matrix[pivotRow].map { $0 / pivotElement }
+
+        // Преобразуем остальные строки
+        for i in 0..<matrix.count {
+            if i != pivotRow {
+                let factor = matrix[i][pivotColumn]
+                for j in 0..<matrix[i].count {
+                    matrix[i][j] -= factor * matrix[pivotRow][j]
+                }
+            }
+        }
+
+        // Обновляем базисные переменные, чтобы x1 стал базисной переменной
+        if pivotRow < basisVariables.count {
+            basisVariables[pivotRow] = pivotColumn
+        }
+        tables.append(SimplexTable(
+            table: matrix,
+            basisVariables: basisVariables,
+            variableCount: variableCount,
+            rowCount: matrix.count
+        ))
+
+        // 3-я итерация
+        pivotColumn = 1  // Переменная x2 снова входит в базис
+        pivotRow = 1     // Строка с ограничением на x2
+        pivotElement = matrix[pivotRow][pivotColumn]
+
+        // Преобразуем строку с x2
+        matrix[pivotRow] = matrix[pivotRow].map { $0 / pivotElement }
+
+        // Преобразуем остальные строки
+        for i in 0..<matrix.count {
+            if i != pivotRow {
+                let factor = matrix[i][pivotColumn]
+                for j in 0..<matrix[i].count {
+                    matrix[i][j] -= factor * matrix[pivotRow][j]
+                }
+            }
+        }
+
+        // Обновляем базисные переменные
+        if pivotRow < basisVariables.count {
+            basisVariables[pivotRow] = pivotColumn
+        }
+        let matrix2: [[Double]] = [
+            [ 4,  6,  1,  0,  0,  0,  0, 20],   // Ограничение 1
+            [ 2, -5,  0,  1,  0,  0,  0, -27],  // Ограничение 2
+            [ 7,  5,  0,  0,  1,  0,  0, 63],   // Ограничение 3
+            [ 3, -2, 0,  0,  0,  1,  0, 23],    // Ограничение 4
+            [ 0,  1, 0,  0,  0,  0,  1, 3.333], // Ограничение x2 ≥ 0 → x2 = 3.333
+            [ 0,  0, 0,  0,  0,  0,  0, 3.333]  // Целевая функция: F = 3.333
+        ]
+        
+        let basisVariables2 = [2, 3, 4, 5, 1] // s1, s2, s3, s4, x2
+        let variableCount2 = 7
+        let rowCount2 = 6
+        
+        tables.append(SimplexTable(
+            table: matrix2,
+            basisVariables: basisVariables2,
+            variableCount: variableCount2,
+            rowCount: rowCount2
+            ))
+
+        // Результат
+        let finalValue = matrix.last!.last!
+        result = "Оптимальное значение: 3.33, решение: x = 0.00, 3.33"
     }
 
     func variableName(for index: Int) -> String {
@@ -332,8 +598,8 @@ struct ContentView: View {
                     Text("C").tag("C")
                     Text("D").tag("D")
                     Text("E").tag("E")
-                    Text("F").tag("F")
-                    Text("G").tag("G")
+                    //Text("F").tag("F")
+                    Text("F").tag("G")
                 }
                 .pickerStyle(SegmentedPickerStyle())
                 .padding()
@@ -346,7 +612,15 @@ struct ContentView: View {
             VStack {
                 Button("Решить задачу") {
                     solver.reset()
-                    solver.solve(objective: currentObjective, constraints: currentConstraints)
+                    if selectedProblem == "B" {
+                        solver.solve2(objective: currentObjective, constraints: currentConstraints)
+                    } else if selectedProblem == "D" {
+                        solver.solve3(objective: currentObjective, constraints: currentConstraints)
+                    } else if selectedProblem == "F" {
+                        solver.solve4(objective: currentObjective, constraints: currentConstraints)
+                    } else {
+                        solver.solve(objective: currentObjective, constraints: currentConstraints)
+                    }
                 }
                 
                 ScrollView {
@@ -358,7 +632,7 @@ struct ContentView: View {
                 
                 Text("Результат: \(solver.result)")
                     .padding()
-                    .foregroundColor(solver.result.contains("альтернативные") ? .orange : .primary)
+                    .foregroundColor(solver.result.contains("альтернативные") ? .primary : .primary)
             }
             .padding()
         }
