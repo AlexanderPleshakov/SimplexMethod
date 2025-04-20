@@ -1,19 +1,17 @@
 import SwiftUI
 
 struct Constraint {
-    let a: Double
-    let b: Double
+    let coefficients: [Double]
     let c: Double
     let sign: InequalitySign
 }
 
 enum InequalitySign {
-    case lessThanOrEqual, greaterThanOrEqual
+    case lessThanOrEqual, greaterThanOrEqual, equal
 }
 
 struct ObjectiveFunction {
-    let a: Double
-    let b: Double
+    let coefficients: [Double]
     let mode: OptimizationMode
 }
 
@@ -38,43 +36,40 @@ class SimplexSolver: ObservableObject {
     }
 
     func solve(objective: ObjectiveFunction, constraints: [Constraint]) {
+        guard !constraints.isEmpty else { return }
+
         var matrix: [[Double]] = []
         var basisVariables: [Int] = []
-        var variableCount = 2
-        var slackIndex = 2
+        
+        let variableCount = objective.coefficients.count
+        let constraintCount = constraints.count
+        let totalVariables = variableCount + constraintCount
 
-        for constraint in constraints {
-            var row = [constraint.a, constraint.b]
+        for (i, constraint) in constraints.enumerated() {
+            var row = constraint.coefficients
 
-            for _ in 0..<constraints.count {
-                row.append(0)
-            }
-
-            switch constraint.sign {
-            case .lessThanOrEqual:
-                row[slackIndex] = 1
-                basisVariables.append(slackIndex)
-            case .greaterThanOrEqual:
-                row[slackIndex] = -1
-                basisVariables.append(slackIndex)
+            // Добавим slack/artificial переменные
+            for j in 0..<constraintCount {
+                row.append(i == j ? (constraint.sign == .lessThanOrEqual ? 1.0 : -1.0) : 0.0)
             }
 
             row.append(constraint.c)
             matrix.append(row)
-            slackIndex += 1
+            basisVariables.append(variableCount + i)
         }
 
-        var objectiveRow = [objective.a * -1, objective.b * -1]
-        for _ in 0..<constraints.count {
-            objectiveRow.append(0)
+        var objectiveRow = objective.coefficients.map { objective.mode == .max ? -$0 : $0 }
+        for _ in 0..<constraintCount {
+            objectiveRow.append(0.0)
         }
-        objectiveRow.append(0)
+        objectiveRow.append(0.0)
         matrix.append(objectiveRow)
 
-        variableCount = objectiveRow.count - 1
+        var currentMatrix = matrix
+        var currentBasis = basisVariables
 
         while true {
-            let lastRow = matrix.last!
+            let lastRow = currentMatrix.last!
             guard let pivotCol = lastRow.dropLast().enumerated().filter({ $0.element < 0 }).min(by: { $0.element < $1.element })?.offset else {
                 break
             }
@@ -82,8 +77,8 @@ class SimplexSolver: ObservableObject {
             var pivotRow: Int? = nil
             var minRatio = Double.infinity
 
-            for i in 0..<(matrix.count - 1) {
-                let row = matrix[i]
+            for i in 0..<(currentMatrix.count - 1) {
+                let row = currentMatrix[i]
                 let element = row[pivotCol]
                 let rhs = row.last!
                 if element > 0 {
@@ -100,43 +95,39 @@ class SimplexSolver: ObservableObject {
                 return
             }
 
-            let pivotElement = matrix[pivotRowUnwrapped][pivotCol]
-            matrix[pivotRowUnwrapped] = matrix[pivotRowUnwrapped].map { $0 / pivotElement }
+            let pivotElement = currentMatrix[pivotRowUnwrapped][pivotCol]
+            currentMatrix[pivotRowUnwrapped] = currentMatrix[pivotRowUnwrapped].map { $0 / pivotElement }
 
-            for i in 0..<matrix.count {
+            for i in 0..<currentMatrix.count {
                 if i != pivotRowUnwrapped {
-                    let factor = matrix[i][pivotCol]
-                    for j in 0..<matrix[i].count {
-                        matrix[i][j] -= factor * matrix[pivotRowUnwrapped][j]
+                    let factor = currentMatrix[i][pivotCol]
+                    for j in 0..<currentMatrix[i].count {
+                        currentMatrix[i][j] -= factor * currentMatrix[pivotRowUnwrapped][j]
                     }
                 }
             }
 
-            basisVariables[pivotRowUnwrapped] = pivotCol
-            let table = SimplexTable(table: matrix, basisVariables: basisVariables, variableCount: variableCount, rowCount: matrix.count)
+            currentBasis[pivotRowUnwrapped] = pivotCol
+            let table = SimplexTable(table: currentMatrix, basisVariables: currentBasis, variableCount: totalVariables, rowCount: currentMatrix.count)
             tables.append(table)
         }
-        
-        let solution = Array(repeating: 0.0, count: variableCount)
-        var finalSolution = solution
-        for (i, basis) in basisVariables.enumerated() {
-            if basis < variableCount {
-                finalSolution[basis] = matrix[i].last!
+
+        var solution = Array(repeating: 0.0, count: totalVariables)
+        for (i, index) in currentBasis.enumerated() {
+            if index < totalVariables {
+                solution[index] = currentMatrix[i].last!
             }
         }
-        
-        // Проверка на альтернативные оптимумы
-        let lastRow = matrix.last!
-        let nonBasisVariables = Set(0..<variableCount).subtracting(basisVariables)
 
-        let hasAlternativeOptima = nonBasisVariables.contains { lastRow[$0] == 0 }
+        let nonBasis = Set(0..<totalVariables).subtracting(currentBasis)
+        let last = currentMatrix.last!
+        let hasAlternativeOptima = nonBasis.contains { last[$0] == 0 }
 
         if hasAlternativeOptima {
             result += "\n⚠️ Существуют альтернативные оптимальные решения."
         }
 
-        let optimalValue = matrix.last!.last!
-        result += "Оптимальное значение: \(optimalValue), решение: x = \(finalSolution)"
+        result += "Оптимальное значение: \(last.last!), решение: \(solution.prefix(variableCount).map { String(format: "%.2f", $0) }.joined(separator: ", "))"
     }
 
     func variableName(for index: Int) -> String {
@@ -210,45 +201,79 @@ struct SimplexTableView: View {
 
 // MARK: - Пример задач
 
-/// Задача А
+/// Задача A
 let exampleAConstraints = [
-    Constraint(a: 1, b: 2, c: 8, sign: .lessThanOrEqual),
-    Constraint(a: 1, b: 1, c: 6, sign: .lessThanOrEqual),
-    Constraint(a: 1, b: 3, c: 3, sign: .greaterThanOrEqual),
-    Constraint(a: 1, b: 0, c: 0, sign: .greaterThanOrEqual),
-    Constraint(a: 0, b: 1, c: 0, sign: .greaterThanOrEqual)
+    Constraint(coefficients: [1, 2], c: 8, sign: .lessThanOrEqual),
+    Constraint(coefficients: [1, 1], c: 6, sign: .lessThanOrEqual),
+    Constraint(coefficients: [1, 3], c: 3, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [1, 0], c: 0, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [0, 1], c: 0, sign: .greaterThanOrEqual)
 ]
-let exampleAObjective = ObjectiveFunction(a: 2, b: 5, mode: .max)
+let exampleAObjective = ObjectiveFunction(coefficients: [2, 5], mode: .max)
 
 /// Задача B
 let exampleBConstraints = [
-    Constraint(a: 1, b: 1, c: 8, sign: .lessThanOrEqual),
-    Constraint(a: 1, b: 3, c: 6, sign: .lessThanOrEqual),
-    Constraint(a: 1, b: 3, c: 3, sign: .greaterThanOrEqual),
-    Constraint(a: 1, b: 0, c: 0, sign: .greaterThanOrEqual),
-    Constraint(a: 0, b: 1, c: 0, sign: .greaterThanOrEqual)
+    Constraint(coefficients: [1, 1], c: 8, sign: .lessThanOrEqual),
+    Constraint(coefficients: [1, 3], c: 6, sign: .lessThanOrEqual),
+    Constraint(coefficients: [1, 3], c: 3, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [1, 0], c: 0, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [0, 1], c: 0, sign: .greaterThanOrEqual)
 ]
-let exampleBObjective = ObjectiveFunction(a: 1, b: 3, mode: .min)
+let exampleBObjective = ObjectiveFunction(coefficients: [1, 3], mode: .min)
 
 /// Задача C
 let exampleCConstraints = [
-    Constraint(a: 1, b: 2, c: 9, sign: .greaterThanOrEqual),
-    Constraint(a: 1, b: 4, c: 8, sign: .greaterThanOrEqual),
-    Constraint(a: 2, b: 1, c: 3, sign: .greaterThanOrEqual),
-    Constraint(a: 1, b: 0, c: 0, sign: .greaterThanOrEqual),
-    Constraint(a: 0, b: 1, c: 0, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [1, 2], c: 9, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [1, 4], c: 8, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [2, 1], c: 3, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [1, 0], c: 0, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [0, 1], c: 0, sign: .greaterThanOrEqual)
 ]
-let exampleCObjective = ObjectiveFunction(a: 1, b: 3, mode: .max)
+let exampleCObjective = ObjectiveFunction(coefficients: [1, 3], mode: .max)
 
 /// Задача D
 let exampleDConstraints = [
-    Constraint(a: 1, b: 2, c: 10, sign: .lessThanOrEqual),
-    Constraint(a: 3, b: 1, c: 6, sign: .lessThanOrEqual),
-    Constraint(a: 1, b: 1, c: 16, sign: .lessThanOrEqual),
-    Constraint(a: 1, b: 0, c: 0, sign: .greaterThanOrEqual),
-    Constraint(a: 0, b: 1, c: 0, sign: .greaterThanOrEqual)
+    Constraint(coefficients: [1, 2], c: 10, sign: .lessThanOrEqual),
+    Constraint(coefficients: [3, 1], c: 6, sign: .lessThanOrEqual),
+    Constraint(coefficients: [1, 1], c: 16, sign: .lessThanOrEqual),
+    Constraint(coefficients: [1, 0], c: 0, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [0, 1], c: 0, sign: .greaterThanOrEqual)
 ]
-let exampleDObjective = ObjectiveFunction(a: -5, b: 3, mode: .min)
+let exampleDObjective = ObjectiveFunction(coefficients: [-5, 3], mode: .min)
+
+/// Задача E
+let exampleEConstraints = [
+    Constraint(coefficients: [4, 6], c: 20, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [2, -5], c: -27, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [7, 5], c: 63, sign: .lessThanOrEqual),
+    Constraint(coefficients: [3, -2], c: 23, sign: .lessThanOrEqual),
+    Constraint(coefficients: [1, 0], c: 0, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [0, 1], c: 0, sign: .greaterThanOrEqual)
+]
+let exampleEObjective = ObjectiveFunction(coefficients: [2, 1], mode: .max)
+
+/// Задача F
+let exampleFConstraints = [
+    Constraint(coefficients: [4, 6], c: 20, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [2, -5], c: -27, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [7, 5], c: 63, sign: .lessThanOrEqual),
+    Constraint(coefficients: [3, -2], c: 23, sign: .lessThanOrEqual),
+    Constraint(coefficients: [0, 1], c: 0, sign: .greaterThanOrEqual)
+]
+let exampleFObjective = ObjectiveFunction(coefficients: [2, 1], mode: .min)
+
+
+/// Задача G
+let exampleGConstraints = [
+    Constraint(coefficients: [1, 3, 5, 3], c: 40, sign: .lessThanOrEqual),
+    Constraint(coefficients: [2, 6, 1, 0], c: 50, sign: .lessThanOrEqual),
+    Constraint(coefficients: [2, 3, 2, 5], c: 30, sign: .lessThanOrEqual),
+    Constraint(coefficients: [1, 0, 0, 0], c: 0, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [0, 1, 0, 0], c: 0, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [0, 0, 1, 0], c: 0, sign: .greaterThanOrEqual),
+    Constraint(coefficients: [0, 0, 0, 1], c: 0, sign: .greaterThanOrEqual)
+]
+let exampleGObjective = ObjectiveFunction(coefficients: [7, 8, 6, 5], mode: .max)
 
 
 struct ContentView: View {
@@ -260,15 +285,18 @@ struct ContentView: View {
     
     var infoText: String {
         let modeText = currentObjective.mode == .max ? "максимум" : "минимум"
-        let a = currentObjective.a
-        let b = currentObjective.b
-        let aStr = String(format: "%.1f", a)
-        let bStr = String(format: "%.1f", b)
-        
-        let signB = b >= 0 ? "+" : "-"
-        let bAbs = String(format: "%.1f", abs(b))
-        
-        return "Необходимо найти \(modeText)\nФункция: z = \(aStr)x \(signB) \(bAbs)y"
+        let terms = currentObjective.coefficients.enumerated().map { index, coef in
+            let sign = coef >= 0 ? "+" : "-"
+            let value = String(format: "%.1f", abs(coef))
+            return "\(sign) \(value)x\(index + 1)"
+        }
+
+        var functionString = terms.joined(separator: " ")
+        if functionString.hasPrefix("+") {
+            functionString.removeFirst(2)
+        }
+
+        return "Необходимо найти \(modeText)\nФункция: z = \(functionString)"
     }
 
     var currentConstraints: [Constraint] {
@@ -276,6 +304,9 @@ struct ContentView: View {
         case "B": return exampleBConstraints
         case "C": return exampleCConstraints
         case "D": return exampleDConstraints
+        case "E": return exampleEConstraints
+        case "F": return exampleFConstraints
+        case "G": return exampleGConstraints
         default: return exampleAConstraints
         }
     }
@@ -285,6 +316,9 @@ struct ContentView: View {
         case "B": return exampleBObjective
         case "C": return exampleCObjective
         case "D": return exampleDObjective
+        case "E": return exampleEObjective
+        case "F": return exampleFObjective
+        case "G": return exampleGObjective
         default: return exampleAObjective
         }
     }
@@ -297,6 +331,9 @@ struct ContentView: View {
                     Text("B").tag("B")
                     Text("C").tag("C")
                     Text("D").tag("D")
+                    Text("E").tag("E")
+                    Text("F").tag("F")
+                    Text("G").tag("G")
                 }
                 .pickerStyle(SegmentedPickerStyle())
                 .padding()
